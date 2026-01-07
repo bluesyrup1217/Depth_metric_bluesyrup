@@ -15,6 +15,7 @@ import math
 import time
 from moge.model.v2 import MoGeModel
 
+
 class MoGe2_Depth:
     def __init__(self, moge2_model: str, image_size=(720, 1080), device="cuda:0"):
         self.model_name = moge2_model
@@ -117,17 +118,27 @@ class MoGe2_Depth:
         print(f"后处理时间: {postprocess_time_end - postprocess_time_begin:.2f}s")
         if save_visual_result:
             saveresult_time_begin = time.time()
-            self.save_depth_np(depth_map=depth_map)  # 保存深度图为numpy数组
+            self.save_np(
+                depth_map=depth_map, save_type="depth"
+            )  # 保存深度图为numpy数组
+            self.save_np(
+                depth_map=points, save_type="points"
+            )  # 这里复用一下保存点云为np数组
             self.save_depth_map(depth_map=depth_map)  # 保存深度图
             self.save_cloudply_map(
                 points=points, color_image=img_removal_dist
             )  # 保存点云为PLY格式
             saveresult_time_end = time.time()
-            print(f"保存推理结果时间: {saveresult_time_end - saveresult_time_begin:.2f}s")
+            print(
+                f"保存推理结果时间: {saveresult_time_end - saveresult_time_begin:.2f}s"
+            )
         else:
             print("Non save result image!")
-        
-        return depth_map
+
+        return (
+            depth_map,
+            points,
+        )  # points的某一像素的值包含一个xyz的坐标，但是xy的值是基于光心的偏移，左半部分图像的x坐标为负，上半部分图像的y坐标为负
 
     def distortion_removal(
         self,
@@ -259,8 +270,11 @@ class MoGe2_Depth:
 
                 f.write(line + "\n")
 
-    def save_depth_np(self, depth_map):
-        depth_map_path = os.path.join(self.save_dir_name, f"np_depth.npy")
+    def save_np(self, depth_map, save_type="depth"):
+        if save_type == "depth":
+            depth_map_path = os.path.join(self.save_dir_name, f"np_depth.npy")
+        elif save_type == "points":
+            depth_map_path = os.path.join(self.save_dir_name, f"np_points.npy")
         np.save(depth_map_path, depth_map)
 
     def inference_tsr(self):
@@ -274,9 +288,7 @@ if __name__ == "__main__":
 
     # 配置参数
     MODEL_NAME = "Ruicheng/moge-2-vits-normal"
-    TEST_IMAGE_PATH = (
-        "data/4mm/x9e3mHPUDpzbEHHH4_165742_9401748571828896.jpg"
-    )
+    TEST_IMAGE_PATH = "data/4mm/x9e3mHPUDpzbEHHH4_165742_9401748571828896.jpg"
     OUTPUT_DIR = "output"
 
     # 创建输出目录
