@@ -283,11 +283,13 @@ if __name__ == "__main__":
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     if torch.backends.mps.is_available():
         device_local = "mps"
-        print()
+        print("使用mps设备!")
     elif torch.cuda.is_available():
         device_local = "cuda:3"
+        print("使用cuda:3设备!")
     else:
         device_local = "cpu"
+        print("使用cpu设备!")
 
     # 相机内参示例
     test_intrinsics = {
