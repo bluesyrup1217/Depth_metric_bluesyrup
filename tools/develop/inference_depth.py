@@ -283,6 +283,7 @@ if __name__ == "__main__":
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     if torch.backends.mps.is_available():
         device_local = "mps"
+        print()
     elif torch.cuda.is_available():
         device_local = "cuda:3"
     else:
