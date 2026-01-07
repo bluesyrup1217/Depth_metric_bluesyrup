@@ -6,7 +6,7 @@
 ####################################
 import sys
 
-sys.path.append("/home/lixin/code/MoGe")
+sys.path.append("./")
 import cv2
 import torch
 import numpy as np
@@ -14,7 +14,6 @@ import os
 import math
 import time
 from moge.model.v2 import MoGeModel
-
 
 class MoGe2_Depth:
     def __init__(self, moge2_model: str, image_size=(720, 1080), device="cuda:0"):
@@ -274,14 +273,20 @@ if __name__ == "__main__":
     import cv2
 
     # 配置参数
-    MODEL_NAME = "Ruicheng/moge-2-vitl-normal"
+    MODEL_NAME = "Ruicheng/moge-2-vits-normal"
     TEST_IMAGE_PATH = (
-        "/home/lixin/code/MoGe/data/4mm/x9e3mHPUDpzbEHHH4_165742_9401748571828896.jpg"
+        "data/4mm/x9e3mHPUDpzbEHHH4_165742_9401748571828896.jpg"
     )
-    OUTPUT_DIR = "/home/lixin/code/MoGe/output"
+    OUTPUT_DIR = "output"
 
     # 创建输出目录
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+    if torch.backends.mps.is_available():
+        device_local = "mps"
+    elif torch.cuda.is_available():
+        device_local = "cuda:3"
+    else:
+        device_local = "cpu"
 
     # 相机内参示例
     test_intrinsics = {
@@ -307,7 +312,7 @@ if __name__ == "__main__":
         moge_depth = MoGe2_Depth(
             moge2_model=MODEL_NAME,
             image_size=(720, 1280),  # (height, width)
-            device="cuda:0",
+            device=device_local,
         )
         print("✓ 模型初始化成功")
     except Exception as e:
