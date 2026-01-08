@@ -1,7 +1,5 @@
 {
     "image_path": "data/4mm/x9e3mHPUDpzbEHHH4_165742_9401748571828896.jpg",
-    "frozen_intri": true,
-    "save_visual_result": true,
     "input_intrinsics": {
         "fx": 1223.2489013671875,
         "fy": 1217.8367919921875,
@@ -16,5 +14,7 @@
         "p1": 0.000291781616397202,
         "p2": -0.0004300259461160749,
         "k2": 0
-    }
+    },
+    "frozen_intri": true,
+    "save_visual_result": true
 }

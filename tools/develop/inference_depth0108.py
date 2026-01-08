@@ -5,6 +5,7 @@
 ####
 ####################################
 import sys
+import json
 
 sys.path.append("./")
 import cv2
@@ -83,10 +84,8 @@ class MoGe2_Depth:
         dist_coeffs: None,
         frozen_intri: bool,
         save_visual_result=True,
+        img_infer_time:int = 0
     ):
-        self.inference_id = time.strftime("%Y%m%d_%H:%M:%S")
-        self.save_dir_name = f"output/{self.inference_id}"
-        os.makedirs(self.save_dir_name, exist_ok=True)
         preprocess_time_begin = time.time()
         input_fov_x, real_intrinsics = self.gen_intrinsics(input_intrinsics)
         img_removal_dist = self.distortion_removal(
@@ -116,7 +115,7 @@ class MoGe2_Depth:
         print(f"预处理时间: {preprocess_time_end - preprocess_time_begin:.2f}s")
         print(f"推理时间: {infer_time_end - infer_time_begin:.2f}s")
         print(f"后处理时间: {postprocess_time_end - postprocess_time_begin:.2f}s")
-        if save_visual_result:
+        if save_visual_result and img_infer_time == 0:
             saveresult_time_begin = time.time()
             self.save_np(
                 depth_map=depth_map, save_type="depth"
@@ -133,12 +132,11 @@ class MoGe2_Depth:
                 f"保存推理结果时间: {saveresult_time_end - saveresult_time_begin:.2f}s"
             )
         else:
-            print("Non save result image!")
+            # print("Non save result image!")
+            pass
 
-        return (
-            depth_map,
-            points,
-        )  # points的某一像素的值包含一个xyz的坐标，但是xy的值是基于光心的偏移，左半部分图像的x坐标为负，上半部分图像的y坐标为负
+        return depth_map, points
+        # points的某一像素的值包含一个xyz的坐标，但是xy的值是基于光心的偏移，左半部分图像的x坐标为负，上半部分图像的y坐标为负
 
     def distortion_removal(
         self,
@@ -277,70 +275,151 @@ class MoGe2_Depth:
             depth_map_path = os.path.join(self.save_dir_name, f"np_points.npy")
         np.save(depth_map_path, depth_map)
 
-    def inference_tsr(self):
+    def read_json_box(self, json_box_path):
+        """
+        读取JSON文件并提取每个对象的xywh和classid信息
+
+        :param json_path: JSON文件路径
+        :return: 包含每个检测框信息的列表，每个元素为{"x": x, "y": y, "w": w, "h": h, "classid": classid}
+        """
+        try:
+            with open(json_box_path, "r") as f:
+                data = json.load(f)
+
+            # 初始化结果列表
+            result_list = []
+
+            # 处理不同的JSON结构
+            if isinstance(data, list):
+                # 直接是对象列表
+                boxes_data = data
+            elif isinstance(data, dict):
+                # 可能包含boxes或其他字段
+                if "boxes" in data:
+                    boxes_data = data["boxes"]
+                elif "detections" in data:
+                    boxes_data = data["detections"]
+                else:
+                    # 尝试将字典作为单个对象处理
+                    boxes_data = [data]
+            else:
+                raise ValueError("JSON数据格式不支持")
+
+            # 提取每个对象的信息
+            for item in boxes_data:
+                if isinstance(item, dict):
+                    # 提取xywh和classid
+                    x = item.get("x", 0)
+                    y = item.get("y", 0)
+                    # 处理可能的width/height或w/h命名
+                    w = item.get("width", item.get("w", 0))
+                    h = item.get("height", item.get("h", 0))
+                    classid = item.get(
+                        "classid", item.get("class_id", item.get("class", -1))
+                    )
+
+                    # 添加到结果列表
+                    result_list.append((x, y))
+
+            return result_list, len(result_list)
+
+        except FileNotFoundError:
+            print(f"错误: JSON文件 {json_box_path} 不存在")
+            return []
+        except json.JSONDecodeError:
+            print(f"错误: JSON文件 {json_box_path} 格式不正确")
+            return []
+        except Exception as e:
+            print(f"处理JSON文件时发生错误: {e}")
+            return []
+
+    def read_json_config(self, json_config_path):
+        """
+        读取JSON文件中的所有变量并返回字典
+
+        :param json_path: JSON文件路径
+        :return: 包含所有变量的字典
+        """
+        try:
+            with open(json_config_path, "r") as f:
+                data = json.load(f)
+            # 直接返回解析后的所有数据
+            return data
+
+        except FileNotFoundError:
+            print(f"错误: JSON文件 {json_config_path} 不存在")
+            return {}
+        except json.JSONDecodeError:
+            print(f"错误: JSON文件 {json_config_path} 格式不正确")
+            return {}
+        except Exception as e:
+            print(f"处理JSON文件时发生错误: {e}")
+            return {}
+
+    def infer_coordinate_value(self, json_box_path, json_config_path):
+        self.inference_id = time.strftime("%Y%m%d_%H:%M:%S")
+        self.save_dir_name = f"output/{self.inference_id}"
+        os.makedirs(self.save_dir_name, exist_ok=True)
+        box_list, box_num = self.read_json_box(json_box_path)
+        config_dict = self.read_json_config(json_config_path)
+        image_path = config_dict["image_path"]
+        image_intrinsics = config_dict["input_intrinsics"]
+        image_dist_coeffs = config_dict["dist_coeffs"]
+        frozen_intri = config_dict["frozen_intri"]
+        save_visual_result = config_dict["save_visual_result"]
+        res = []
+        for i, box in enumerate(box_list):
+            x, y = box
+            depth_map, points = self.inference_depth(
+                img=image_path,
+                frozen_intri=frozen_intri,
+                input_intrinsics=image_intrinsics,
+                dist_coeffs=image_dist_coeffs,
+                save_visual_result=save_visual_result,
+                img_infer_time=i,
+            )
+            try:
+                u, v, z = points[y][x][0], points[y][x][1], points[y][x][2]
+            except:
+                u, v, z = 5.0, 2.0, 0.0
+            # 将float32类型转换为Python的float类型以便JSON序列化
+            res.append({"u": float(u), "v": float(v), "z": float(z)})
+        try:
+            with open(os.path.join(self.save_dir_name, f"inference_coordinate.json"), "w") as f:
+                json.dump(res, f, indent=4)
+        except Exception as e:
+            print(f"保存JSON文件时发生错误: {e}")
+            
+            
+        
         pass
-
-
 
 
 # 测试函数
 if __name__ == "__main__":
 
-    # 配置参数
+    # init 参数
     MODEL_NAME = "Ruicheng/moge-2-vits-normal"
     TEST_IMAGE_PATH = "data/4mm/x9e3mHPUDpzbEHHH4_165742_9401748571828896.jpg"
-    
-    # 使用设备
+    IMAGE_SIZE=(720, 1280)
+
     if torch.backends.mps.is_available():
-        device_local = "mps"
+        DEVICE_LOCAL = "mps"
         print("使用mps设备!")
     elif torch.cuda.is_available():
-        device_local = "cuda:3"
+        DEVICE_LOCAL = "cuda:3"
         print("使用cuda:3设备!")
     else:
-        device_local = "cpu"
+        DEVICE_LOCAL = "cpu"
         print("使用cpu设备!")
 
-    # 相机内参示例
-    test_intrinsics = {
-        "fx": 1223.2489013671875,
-        "fy": 1217.8367919921875,
-        "cx": 971.3410034179688,
-        "cy": 533.7720336914062,
-        "cawidth": 1920,
-        "caheight": 1080,
-    }
-
-    dist_coeffs = {
-        "k0": -0.2955333888530731,
-        "k1": 0.10201843827962875,
-        "p1": 0.000291781616397202,
-        "p2": -0.0004300259461160749,
-        "k2": 0,
-    }
-
-    # 1. 初始化模型
-    try:
-        moge_depth = MoGe2_Depth(
-            moge2_model=MODEL_NAME,
-            image_size=(720, 1280),  # (height, width)
-            device=device_local,
-        )
-        print("✓ 模型初始化成功")
-    except Exception as e:
-        print(f"✗ 模型初始化失败: {e}")
-        exit(1)
-
-    # 2. 推理深度图
-    try:
-        depth_map_frozen = moge_depth.inference_depth(
-            img=TEST_IMAGE_PATH,
-            frozen_intri=True,
-            input_intrinsics=test_intrinsics,
-            dist_coeffs=dist_coeffs,
-        )
-    except Exception as e:
-        print(f"深度图推理失败: {e}")
+    moge_depth = MoGe2_Depth(
+        moge2_model=MODEL_NAME,
+        image_size=IMAGE_SIZE,
+        device=DEVICE_LOCAL,
+    )
         
-    # 3. 获取点的预测三坐标
-    
+    moge_depth.infer_coordinate_value(
+        json_box_path="inference_box.json",
+        json_config_path="inference_params.json",
+    )
