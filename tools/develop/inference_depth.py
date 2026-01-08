@@ -281,18 +281,16 @@ class MoGe2_Depth:
         pass
 
 
+
+
 # 测试函数
 if __name__ == "__main__":
-    import os
-    import cv2
 
     # 配置参数
     MODEL_NAME = "Ruicheng/moge-2-vits-normal"
     TEST_IMAGE_PATH = "data/4mm/x9e3mHPUDpzbEHHH4_165742_9401748571828896.jpg"
-    OUTPUT_DIR = "output"
-
-    # 创建输出目录
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    
+    # 使用设备
     if torch.backends.mps.is_available():
         device_local = "mps"
         print("使用mps设备!")
@@ -322,7 +320,6 @@ if __name__ == "__main__":
     }
 
     # 1. 初始化模型
-    print("初始化模型...")
     try:
         moge_depth = MoGe2_Depth(
             moge2_model=MODEL_NAME,
@@ -334,23 +331,16 @@ if __name__ == "__main__":
         print(f"✗ 模型初始化失败: {e}")
         exit(1)
 
-    # 2. 加载测试图像
-    print(f"\n加载测试图像: {TEST_IMAGE_PATH}")
+    # 2. 推理深度图
     try:
-        img = cv2.imread(TEST_IMAGE_PATH)
-        if img is None:
-            raise Exception("无法读取图像")
-
-        # 转换为RGB
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        print(f"✓ 图像加载成功，尺寸: {img.shape[1]}x{img.shape[0]}")
+        depth_map_frozen = moge_depth.inference_depth(
+            img=TEST_IMAGE_PATH,
+            frozen_intri=True,
+            input_intrinsics=test_intrinsics,
+            dist_coeffs=dist_coeffs,
+        )
     except Exception as e:
-        print(f"✗ 图像加载失败: {e}")
-        exit(1)
-
-    depth_map_frozen = moge_depth.inference_depth(
-        img=TEST_IMAGE_PATH,
-        frozen_intri=True,
-        input_intrinsics=test_intrinsics,
-        dist_coeffs=dist_coeffs,
-    )
+        print(f"深度图推理失败: {e}")
+        
+    # 3. 获取点的预测三坐标
+    
