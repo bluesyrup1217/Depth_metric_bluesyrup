@@ -115,6 +115,8 @@ class MoGe2_Depth:
         print(f"预处理时间: {preprocess_time_end - preprocess_time_begin:.2f}s")
         print(f"推理时间: {infer_time_end - infer_time_begin:.2f}s")
         print(f"后处理时间: {postprocess_time_end - postprocess_time_begin:.2f}s")
+        
+        # 只有当save_visual_result为True且是第一次推理时才保存结果
         if save_visual_result and img_infer_time == 0:
             saveresult_time_begin = time.time()
             self.save_np(
@@ -122,8 +124,8 @@ class MoGe2_Depth:
             )  # 保存深度图为numpy数组
             self.save_np(
                 depth_map=points, save_type="points"
-            )  # 这里复用一下保存点云为np数组
-            self.save_depth_map(depth_map=depth_map)  # 保存深度图
+            )  # 保存点云为np数组
+            self.save_depth_map(depth_map=depth_map)  # 保存可视化深度图
             self.save_cloudply_map(
                 points=points, color_image=img_removal_dist
             )  # 保存点云为PLY格式
@@ -131,11 +133,8 @@ class MoGe2_Depth:
             print(
                 f"保存推理结果时间: {saveresult_time_end - saveresult_time_begin:.2f}s"
             )
-        else:
-            # print("Non save result image!")
-            pass
 
-        return depth_map, points
+        return depth_map, points, img_removal_dist
         # points的某一像素的值包含一个xyz的坐标，但是xy的值是基于光心的偏移，左半部分图像的x坐标为负，上半部分图像的y坐标为负
 
     def distortion_removal(
@@ -356,6 +355,83 @@ class MoGe2_Depth:
             print(f"处理JSON文件时发生错误: {e}")
             return {}
 
+    def transform_coordinates(self, orig_points, real_intrinsics, dist_coeffs=None, img_shape=None):
+        """
+        将原始未去畸变图像的坐标转换为去畸变并填充黑边后的新坐标
+
+        :param orig_points: 原始图像坐标列表，格式为[(x1, y1), (x2, y2), ...]
+        :param real_intrinsics: 相机内参
+        :param dist_coeffs: 畸变系数，默认使用类中定义的默认值
+        :param img_shape: 原始图像形状 (height, width)
+        :return: 转换后的坐标列表，格式为[(x1, y1), (x2, y2), ...]
+        """
+        if dist_coeffs is None:
+            dist_coeffs = {
+                "k0": -0.2955333888530731,
+                "k1": 0.10201843827962875,
+                "p1": 0.000291781616397202,
+                "p2": -0.0004300259461160749,
+                "k2": 0,
+            }
+        
+        # 创建相机内参矩阵
+        camera_intrinsics = np.array([
+            [real_intrinsics["fx"], 0, real_intrinsics["cx"]],
+            [0, real_intrinsics["fy"], real_intrinsics["cy"]],
+            [0, 0, 1],
+        ])
+        
+        # 创建畸变系数矩阵
+        camera_dist_coeffs = np.array([
+            dist_coeffs["k0"],
+            dist_coeffs["k1"],
+            dist_coeffs["p1"],
+            dist_coeffs["p2"],
+            dist_coeffs["k2"],
+        ])
+        
+        # 如果没有提供图像形状，使用内参中的cawidth和caheight
+        if img_shape is None:
+            width = real_intrinsics["cawidth"]
+            height = real_intrinsics["caheight"]
+        else:
+            height, width = img_shape
+        image_size = (width, height)
+        
+        # 获取新的相机矩阵和ROI
+        scale_factor = 1.0
+        new_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(
+            camera_intrinsics, camera_dist_coeffs, image_size, scale_factor
+        )
+        
+        # 将原始坐标转换为去畸变坐标
+        # 将点列表转换为numpy数组，形状为(N, 1, 2)
+        orig_points_np = np.array(orig_points, dtype=np.float32).reshape(-1, 1, 2)
+        
+        # 计算去畸变后的点
+        undistorted_points = cv2.undistortPoints(orig_points_np, camera_intrinsics, camera_dist_coeffs, P=new_camera_matrix)
+        undistorted_points = undistorted_points.reshape(-1, 2)
+        
+        # 计算黑边填充的偏移量
+        x, y, w, h = roi
+        start_x = (width - w) // 2
+        start_y = (height - h) // 2
+        
+        # 计算最终坐标：去畸变后的坐标 + 黑边填充的偏移量
+        transformed_points = []
+        for (ux, uy) in undistorted_points:
+            # 检查点是否在有效区域内
+            if x <= ux < x + w and y <= uy < y + h:
+                # 将点从去畸变后的有效区域转换到最终图像中的位置
+                tx = start_x + (ux - x)
+                ty = start_y + (uy - y)
+                transformed_points.append((int(round(tx)), int(round(ty))))
+            else:
+                # 如果点不在有效区域内，返回None或原始点（根据需求调整）
+                transformed_points.append(None)
+        
+        return transformed_points
+
     def infer_coordinate_value(self, json_box_path, json_config_path):
         self.inference_id = time.strftime("%Y%m%d_%H:%M:%S")
         self.save_dir_name = f"output/{self.inference_id}"
@@ -367,23 +443,56 @@ class MoGe2_Depth:
         image_dist_coeffs = config_dict["dist_coeffs"]
         frozen_intri = config_dict["frozen_intri"]
         save_visual_result = config_dict["save_visual_result"]
+        
+        # 读取原始图像获取形状
+        orig_img = cv2.imread(image_path)
+        img_shape = orig_img.shape[:2] if orig_img is not None else None
+        
+        # 生成实际使用的内参（考虑图像缩放）
+        _, real_intrinsics = self.gen_intrinsics(image_intrinsics)
+        
+        # 转换所有坐标点
+        transformed_box_list = self.transform_coordinates(
+            box_list, real_intrinsics, image_dist_coeffs, img_shape
+        )
+        
         res = []
-        for i, box in enumerate(box_list):
-            x, y = box
-            depth_map, points = self.inference_depth(
-                img=image_path,
-                frozen_intri=frozen_intri,
-                input_intrinsics=image_intrinsics,
-                dist_coeffs=image_dist_coeffs,
-                save_visual_result=save_visual_result,
-                img_infer_time=i,
-            )
-            try:
-                u, v, z = points[y][x][0], points[y][x][1], points[y][x][2]
-            except:
+        # 只需要执行一次深度推理
+        depth_map, points = self.inference_depth(
+            img=image_path,
+            frozen_intri=frozen_intri,
+            input_intrinsics=image_intrinsics,
+            dist_coeffs=image_dist_coeffs,
+            save_visual_result=save_visual_result,
+            img_infer_time=0,
+        )
+        
+        for i, (orig_box, transformed_box) in enumerate(zip(box_list, transformed_box_list)):
+            orig_x, orig_y = orig_box
+            
+            if transformed_box is None:
+                # 如果点不在有效区域内，使用默认值
                 u, v, z = 5.0, 2.0, 0.0
+                print(f"警告：原始坐标 ({orig_x}, {orig_y}) 转换后超出有效区域")
+            else:
+                x, y = transformed_box
+                try:
+                    # 确保坐标在深度图范围内
+                    h, w, _ = points.shape
+                    if 0 <= y < h and 0 <= x < w:
+                        u, v, z = points[y][x][0], points[y][x][1], points[y][x][2]
+                    else:
+                        u, v, z = 5.0, 2.0, 0.0
+                        print(f"警告：转换后的坐标 ({x}, {y}) 超出深度图范围 ({w}x{h})")
+                except Exception as e:
+                    u, v, z = 5.0, 2.0, 0.0
+                    print(f"错误：访问深度图时发生异常：{e}")
+            
             # 将float32类型转换为Python的float类型以便JSON序列化
-            res.append({"u": float(u), "v": float(v), "z": float(z)})
+            res.append({"original_x": float(orig_x), "original_y": float(orig_y), 
+                        "transformed_x": float(transformed_box[0]) if transformed_box is not None else None,
+                        "transformed_y": float(transformed_box[1]) if transformed_box is not None else None,
+                        "u": float(u), "v": float(v), "z": float(z)})
         try:
             with open(os.path.join(self.save_dir_name, f"inference_coordinate.json"), "w") as f:
                 json.dump(res, f, indent=4)
